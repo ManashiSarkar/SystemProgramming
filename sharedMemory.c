@@ -44,14 +44,15 @@ int main(void) {
     */
     pid_t pid = fork();
     char last_msg[2][100] = {0};
+    strncpy(mem, "hello", strlen("hello") + 1);
     while (1) {
         if(pid == 0) {
             while (!strcmp(last_msg[0], mem))
                 sleep(0.321);
             printf("%s has modified mem %d times\n", (char*) mem, modifier(mem,0));
         } else {
-            //while (!strcmp(last_msg[1], mem))
-            sleep(0.788);
+            while (!strcmp(last_msg[1], mem))
+                sleep(0.788);
             printf("%s has modified mem %d times\n", (char*) mem, modifier(mem,1));
         }
         //sleep(0.87);
