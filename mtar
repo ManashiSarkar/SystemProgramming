@@ -1,0 +1,423 @@
+#!/bin/bash
+
+help="command : mtar [ |--help|-help|-h]"
+list="command : mtar [--list|-list|-l] <archive_name.mzip>"
+extract="command : mtar [--extract|-extract|-x] <archive_name.mzip>"
+create="command : mtar [--create|-create|-c] <archive_name.mzip> [space separated list of files]"
+
+# command input 
+if [ -z "$1" ] || [ $1 == "--help" ] || [ $1 == "-h" ] || [ $1 == "-help" ]; then
+	echo $help
+    echo $list
+    echo $extract
+    echo $create
+	exit 0
+fi
+
+function traverse()
+{
+    cur=`pwd`
+    pathrec=$1 # to specify path in extracted directory
+    sub=`ls -l` #current directory
+    
+    ifs2=$IFS
+    IFS=$' ' read -rd '' -a children <<<"$sub"
+    IFS=$ifs2
+
+    mems=(${children[@]})
+    i=0
+    meta="meta:"
+
+    for mem in ${mems[@]:2}; do
+        meta=$meta$mem" "
+        if [ "$((i%9))" == "8" ]; then
+            cur=`pwd`
+            if [ $cur/$mem == $temp_archive ]; then
+                ((i++))
+                meta="meta:"
+                continue
+            fi
+            name="name:"$pathrec/$mem";"
+            echo -n $name${meta::-1}";"$size"content:" >> $temp_archive
+            meta="meta:"
+            cur=`pwd`
+            if [ -d "$cur/$mem" ]; then
+                cd "$mem"
+                echo "archiving : ""$pathrec/$mem"
+                traverse "$pathrec/$mem"
+                echo -n ";" >> $temp_archive
+                while [ "1" == "1" ]; do
+                    if [ "${pathrec: -1}" == "/" ]; then
+                        break
+                    fi
+                    pathrec=${pathrec:0:-1}
+                done
+                pathrec=${pathrec:0:-1}
+            else
+                cur=`pwd`
+                echo -n `cat "$cur/$mem"` >> $temp_archive
+                echo -n ";" >> $temp_archive
+            fi
+        else if [ "$((i%9))" == "4" ]; then
+            size="size:"$mem";"
+        fi fi
+        ((i++))
+    done
+    cd ".."
+    ((i--))
+}
+
+if [ $1 == "--create" ] || [ $1 == "-create" ] || [ $1 == "-c" ]; then
+    echo "Preparing to archive..."
+    sleep 1
+    echo "Ensure that whitespace characters are not there in file and directory names, else mtar may not work as expected. \
+If you get 'file doesn't' exist error, run ls -l to check that the file and directory names are correct. If you \
+are still unsure, consider using 'ls dirname > names' and then 'cat name | tr ' \n' '#$'' to check for whitespaces."
+    sleep 1
+    if [ $# -lt 3 ] || [[ ! $2 =~ .+\.mzip ]]; then
+        echo $create
+        exit 0
+    fi
+    for f in "${@:3}"; do
+        if [ ! -e "$f" ]; then
+            echo $create
+            echo $f "does not exist"
+            exit 0
+        fi
+    done
+
+    temp_archive=`pwd`"/temp_archive"
+    echo -n "" > $temp_archive
+    main_archive=`pwd`"/"$2
+
+    #To Do:
+        #tricky input cases:
+        #1. special directory names, such as . .. ~ /, special paths such as mydirectory/~/../\/./../../..
+        #2. hidden files such as .filename
+        #3. arguments have ancestor-successor relationship' => can be resolved with a map of paths, to not include contents twice
+
+        #other cases:
+        #1. directories don't have read or execute permissions, so they can't be entered
+        #2. files don't have read permissions
+        #3. the current directory is where the archived mzip file is stored, and current directory doesn't have write permissions
+        #4. check if another archive of same name exists in that location, as it will be overwritten in the end otherwise
+
+        #others:
+        #1. Create a unique temp_archive file by either randomly generating the name, or first sorting the arguments, or creating a trie data structure for arguments
+        #2. Create an error log
+
+    changes="false"
+    for ff in "${@:3}"; do
+        f=$ff
+        if [ $f == $2 ]; then
+            changes="true" # to change name of archive file in the end
+        fi
+        if [ $f == "." ]; then
+            f=`pwd`
+        fi
+        #if [ $f == ".." ]; then
+        #    f=`pwd`
+        #    while [ "1" == "1" ]; do
+        #        if [ "${f: -1}" == "/" ]; then
+        #            break
+        #        fi
+        #        f=${f:0:-1}
+        #    done
+        #fi
+        
+        #if [ $f == "~" ]; then
+        #    here=`pwd`
+        #    cd "~"
+        #    f=`pwd`
+        #    cd $here
+        #fi
+        
+        if [ ${f: -1} == "/" ]; then
+            f=${f::${#f}-1}
+        fi
+
+        ifs2=$IFS
+        IFS='/' read -r -a d <<< $f
+        IFS=$ifs2
+
+        if [ -d $f ]; then
+            list=`ls -l $f/..`
+        else
+            path=""
+            if [ ${#d[@]} == "1" ]; then
+                path=`pwd`
+            else
+                for p in ${d[@]:0:${#d[@]}-1}; do
+                    path=$path$p"/"
+                done
+            fi
+            list=`ls -l "$path"`
+        fi
+        
+        child=""
+        fields=""
+        ifs2=$IFS
+        IFS=$'\n' read -rd '' -a children <<<"$list"
+        
+        for (( i = 1; i < ${#children[@]}; i++ )); do
+            IFS=$' ' read -rd '' -a field <<<"${children[$i]}"
+            if [ ${field[8]} == ${d[-1]} ]; then
+                child=${children[$i]}
+                fields=("${field[@]}")
+                break
+            fi
+        done
+        IFS=$ifs2
+        
+        header="name:"${2::-5}/"${fields[8]:0:-1}"";meta:"$child";size:"${fields[4]}";content:"
+
+        echo -n $header >> $temp_archive
+
+        content=""
+        if [ -d $f ]; then
+            cur=`pwd`
+            cd "$f"
+            path2=${2::-5}/${d[-1]}
+            echo "archiving : ""$path2"
+            curpath=`pwd`
+            traverse $path2
+            cd $cur
+        else
+            content=`read $f`
+            echo -n $content >> $temp_archive
+        fi
+    done
+    mv $temp_archive $main_archive
+    exit 0
+fi
+
+#To Do:
+#1. unwrapping looks for the exact name provided in args, in current directory, and needs to support other paths as well
+#2. listing can be made prettier with trie data structure and recursion
+
+if [ $1 == "--list" ] || [ $1 == "-list" ] || [ $1 == "-l" ] || [ $1 == "--extract" ] || [ $1 == "-extract" ] || [ $1 == "-x" ]; then
+    if [ $# -lt 2 ] || [[ ! $2 =~ .+\.mzip ]] || [ ! -e $2 ]; then
+        echo $list
+        exit 0
+    fi
+    arcname=$2
+    type=$1
+    if [ $1 == "--list" ] || [ $1 == "-list" ] || [ $1 == "-l" ]; then
+        echo "-------------------"
+    else
+        echo "Extracting in ${arcname::-5}/"
+        sleep 1
+    fi
+    f=`cat "$arcname"`
+    n=`wc -c "$arcname"`
+    ifs2=$IFS
+    IFS=' ' read -r -a d <<< $n
+    IFS=$ifs2
+    n=${d[0]}
+    newfile="newfile.txt"
+    state=0
+    #name, meta, size, contents
+    name=""
+    meta=""
+    size=""
+    content=""
+    dir="false"
+    cnt=0
+    for ((i=0; i<n; i++)); do
+        ptr="$((state%8))"
+        if [ "$cnt" == "0" ] && [ "${f:$i:1}" == ";" ]; then
+            if [ "$ptr" == "0" ]; then
+                continue
+            fi
+            if [ "$ptr" == "3" ] && [ ! "${meta:0:1}" == "d" ]; then  
+                if [ $1 == "--list" ] || [ $1 == "-list" ] || [ $1 == "-l" ]; then
+                    echo $name  
+                fi
+            fi
+            if [ "$ptr" == "5" ]; then # ignore contents, if directory
+                if [ "$size" == "0" ]; then
+                    dir="true"
+                    cnt=0
+                else
+                    dir="false"
+                    cnt=$size
+                fi
+            fi
+            if [ "$ptr" == "7" ]; then
+
+                # create the file
+                if [ $1 == "--extract" ] || [ $1 == "-extract" ] || [ $1 == "-x" ]; then
+                    ifs2=$IFS
+                    IFS=$' ' read -rd '' -a fields <<<"$meta"
+                    IFS=$ifs2
+                    month=""
+                    case "${fields[5]}" in
+                        "Jan")
+                            month="01"
+                            ;;
+                        "Feb")
+                            month="02"
+                            ;;
+                        "Mar")
+                            month="03"
+                            ;;
+                        "Apr")
+                            month="04"
+                            ;;
+                        "May")
+                            month="05"
+                            ;;
+                        "Jun")
+                            month="06"
+                            ;;
+                        "Jul")
+                            month="07"
+                            ;;
+                        "Aug")
+                            month="08"
+                            ;;
+                        "Sep")
+                            month="09"
+                            ;;
+                        "Oct")
+                            month="10"
+                            ;;
+                        "Nov")
+                            month="11"
+                            ;;
+                        "Dec")
+                            month="12"
+                            ;;
+                        *)
+                            month="06"
+                            ;;
+                    esac
+                    #echo "meta:"$meta
+                    #[[CC]YY]MMDDhhmm[.ss] time format
+                    timestamp="2018"$month${fields[6]}${fields[7]:0:-3}${fields[7]:3:2}".00"
+                    #timestamp=$((timestamp))
+                    touch -a -m -t $timestamp $name
+                    echo -n $content > $name
+                    # use meta to set properties to the files
+                    #permissions, timestamps, owners
+                    p0=0
+                    if [ "${meta:1:1}" == "r" ]; then
+                        p0=$((p0+4))
+                    fi
+                    if [ "${meta:2:1}" == "w" ]; then
+                        p0=$((p0+2))
+                    fi
+                    if [ "${meta:3:1}" == "x" ]; then
+                        p0=$((p0+1))
+                    fi
+                    p1=0
+                    if [ "${meta:4:1}" == "r" ]; then
+                        p1=$((p1+4))
+                    fi
+                    if [ "${meta:5:1}" == "w" ]; then
+                        p1=$((p1+2))
+                    fi
+                    if [ "${meta:6:1}" == "x" ]; then
+                        p1=$((p1+1))
+                    fi
+                    p2=0
+                    if [ "${meta:7:1}" == "r" ]; then
+                        p2=$((p2+4))
+                    fi
+                    if [ "${meta:8:1}" == "w" ]; then
+                        p2=$((p2+2))
+                    fi
+                    if [ "${meta:9:1}" == "x" ]; then
+                        p2=$((p2+1))
+                    fi
+                    chown ${fields[2]}:${fields[3]} $name
+                    chmod $p0$p1$p2 $name
+                fi
+
+                name=""
+                meta=""
+                size=""
+                content=""
+            fi
+            ((++state))
+        else
+            # logic for state 1,3,5,7 and even numbers
+            case "$ptr" in
+                "1")
+                    name+=${f:i:1}
+                    ;;
+                "3")
+                    meta+=${f:i:1}
+                    ;;
+                "5")
+                    size+=${f:i:1}
+                    ;;
+                "7")
+                    ((--cnt))
+                    content+=${f:i:1}
+                    ;; 
+                *)
+                    if [ "${f:$i:1}" == ":" ]; then
+                        ((++state))
+                        if [ $ptr == "6" ] && [ $dir == "true" ]; then
+                            # create the directory
+                            if [ $1 == "--extract" ] || [ $1 == "-extract" ] || [ $1 == "-x" ]; then
+                                mkdir -p $name
+                                # use meta to set properties to the directories
+                                #permissions, owners
+                                p0=0
+                                if [ "${meta:1:1}" == "r" ]; then
+                                    p0=$((p0+4))
+                                fi
+                                if [ "${meta:2:1}" == "w" ]; then
+                                    p0=$((p0+2))
+                                fi
+                                if [ "${meta:3:1}" == "x" ]; then
+                                    p0=$((p0+1))
+                                fi
+                                p1=0
+                                if [ "${meta:4:1}" == "r" ]; then
+                                    p1=$((p1+4))
+                                fi
+                                if [ "${meta:5:1}" == "w" ]; then
+                                    p1=$((p1+2))
+                                fi
+                                if [ "${meta:6:1}" == "x" ]; then
+                                    p1=$((p1+1))
+                                fi
+                                p2=0
+                                if [ "${meta:7:1}" == "r" ]; then
+                                    p2=$((p2+4))
+                                fi
+                                if [ "${meta:8:1}" == "w" ]; then
+                                    p2=$((p2+2))
+                                fi
+                                if [ "${meta:9:1}" == "x" ]; then
+                                    p2=$((p2+1))
+                                fi
+                                chown ${fields[2]}:${fields[3]} $name
+                                chmod $p0$p1$p2 $name
+                            fi
+                            name=""
+                            meta=""
+                            size=""
+                            content=""
+                            ((++state))
+                            dir="false"
+                        fi
+                    fi
+                    ;;
+            esac
+        fi
+    done
+    if [ $1 == "--list" ] || [ $1 == "-list" ] || [ $1 == "-l" ]; then
+        echo "-------------------"
+    else
+        echo "Done"
+    fi
+    exit 0
+fi
+
+echo "Incorrect command"
+echo -e $help
+
